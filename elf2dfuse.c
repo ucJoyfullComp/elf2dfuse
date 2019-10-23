@@ -21,10 +21,15 @@
     DEALINGS IN THE SOFTWARE.
 */
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <malloc.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
 
 #define USB_VENDOR_ID  0x0483
 #define USB_PRODUCT_ID 0xdf11
@@ -79,6 +84,12 @@ struct memory_blob
 	uint8_t *data;
 	struct memory_blob *next;
 };
+
+typedef struct _vidpid_t {
+    unsigned short int vid;
+    unsigned short int pid;
+    struct _vidpid_t *next;
+} vidpid_t;
 
 static Elf32_Ehdr eh; 
 
@@ -328,20 +339,160 @@ static uint32_t crc32_calc(uint32_t crc, uint8_t *buffer, uint32_t length)
 	return crc;
 }
 
+static vidpid_t *readvidPidList(FILE *fp)
+{
+    vidpid_t *head, *p, *tp;
+    unsigned int vid, pid;
+
+    p = tp = head = (vidpid_t *)NULL;
+    if (fp) {
+        vid = pid = 0;
+        while (fscanf(fp, "%x:%x\n", &vid, &pid) == 2)
+        {
+            if ((vid == 0) || (vid > 0xFFFF) || (pid > 0xFFFF)) 
+            {
+                printf("ERROR: vidpid file internal format error.\n");
+                exit(-1);
+            }
+            tp = (vidpid_t *)malloc(sizeof(vidpid_t));
+            tp->vid = vid;
+            tp->pid = pid;
+            tp->next = (struct _vidpid_t *)NULL;
+            if (p == (vidpid_t *)NULL) 
+                p = tp;
+            else
+                p->next = (struct _vidpid_t *)tp;
+            if (head == (vidpid_t *)NULL) head = p;
+            p = tp;
+            tp = (vidpid_t *)NULL;
+        }
+        return head;
+    }
+    return (vidpid_t *)NULL;
+}
+
+static void freevidPidList(vidpid_t *head)
+{
+    vidpid_t *p;
+    
+    if (head == (vidpid_t *)NULL) return;
+    while (head) {
+        p = (vidpid_t *)head->next;
+        free(head);
+        head = p;
+    }
+}
+
+static vidpid_t *removeFromListHead(vidpid_t **head)
+{
+    vidpid_t *ret;
+
+    if (head == (vidpid_t **)NULL) return (vidpid_t *)NULL;
+    if (*head == (vidpid_t *)NULL) return *head;
+    ret = *head;
+    *head = (vidpid_t *)ret->next;
+    ret->next = (struct _vidpid_t *)NULL;
+    return ret;
+}
+
+off_t fsize(const char *filename) {
+    struct stat st;
+
+    if (stat(filename, &st) == 0)
+        return st.st_size;
+
+    fprintf(stderr, "Cannot determine size of %s: %s\n",
+            filename, strerror(errno));
+
+    return -1;
+}
+
+FILE *elffp = (FILE *)NULL;
+FILE *dfufp = (FILE *)NULL;
+FILE *vidpidfp = (FILE *)NULL; /* file containing a list of vid:pid pairs for */
+                               /* vendor product specific DFU files */
+
+void closeOpenFiles()
+{
+    if (vidpidfp != (FILE *)NULL)
+        fclose(vidpidfp);
+	if (elffp != (FILE *)NULL)
+        fclose(elffp);
+	if (dfufp != (FILE *)NULL)
+        fclose(elffp);
+}
+
+Elf32_Phdr *ph = (Elf32_Phdr *)NULL;
+vidpid_t *head = (vidpid_t *)NULL;
+struct memory_blob *blob = (struct memory_blob *)NULL;
+struct memory_blob *pm_list = (struct memory_blob *)NULL;
+struct memory_blob *seek = (struct memory_blob *)NULL;
+uint8_t *filebuf = (uint8_t *)NULL;
+uint8_t *fname = (uint8_t *)NULL;
+uint8_t *fext = (uint8_t *)NULL;
+uint8_t *fullname = (uint8_t *)NULL;
+
+void freeAllAllocatedMemory()
+{
+    if (ph != (Elf32_Phdr *)NULL)
+    {
+        free(ph);
+        ph = (Elf32_Phdr *)NULL;
+    }
+    if (head != (vidpid_t *)NULL)
+    {
+        freevidPidList(head);
+        head = (vidpid_t *)NULL;
+    }
+    if (blob != (struct memory_blob *)NULL)
+    {
+        while (blob != (struct memory_blob *)NULL)
+        {
+            seek = blob->next;
+            free(blob);
+            blob = seek;
+        }
+    }
+    if (filebuf != (uint8_t *)NULL)
+    {
+        free(filebuf);
+        filebuf = (uint8_t *)NULL;
+    }
+    if (fname != (uint8_t *)NULL)
+    {
+        free(fname);
+        fname = (uint8_t *)NULL;
+    }
+    if (fext != (uint8_t *)NULL)
+    {
+        free(fext);
+        fext = (uint8_t *)NULL;
+    }
+    if (fullname != (uint8_t *)NULL)
+    {
+        free(fullname);
+        fullname = (uint8_t *)NULL;
+    }
+}
+
 int main(int argc, char *argv[])
 {
-	FILE *elffp;
-	FILE *dfufp;
 	int i, j;
-	Elf32_Phdr *ph;
 	Elf32_Shdr sh;
-	struct memory_blob *blob, *pm_list, *seek;
 	uint32_t phy_addr, image_elements, file_size, crc32, target_size, element_size;
+    uint32_t crc32_clean;
 	uint8_t scratchpad[274 /* sized specifically for DfuSe Target Prefix */];
+    off_t filesize, bwritten;
+    vidpid_t *current_vidpid;
+    char *cp = (char *)NULL;
+    long int lenlen;
 
-	if (argc < 3)
+    atexit(freeAllAllocatedMemory);
+    atexit(closeOpenFiles);
+
+	if (argc < 4)
 	{
-		printf("%s <input.elf> <output.dfu>\n", argv[0]);
+		printf("%s <input.elf> <output[_vid_pid].dfu> <vidpid.txt>\n", argv[0]);
 		return -1;
 	}
 
@@ -357,6 +508,26 @@ int main(int argc, char *argv[])
 		printf("ERROR: unable to open file <%s> for writing\n", argv[2]);
 		return -1;
 	}
+    vidpidfp = fopen(argv[3], "rt");
+	if (!vidpidfp)
+	{
+		printf("ERROR: unable to open test file <%s> for reading\n", argv[3]);
+		return -1;
+	}
+
+
+    /*
+    read and parse vid:PID list
+    */
+    head = (vidpid_t *)NULL;
+    head = readvidPidList(vidpidfp);
+    if (head == (vidpid_t *)NULL)
+    {
+        printf("ERROR: format of file %s is incorrect or file is empty "
+               "or non existent\n", argv[3]);
+        return -1;
+    }
+    fclose(vidpidfp);
 
 	/*
 	read (and check) ELF header
@@ -537,10 +708,10 @@ int main(int argc, char *argv[])
 	i = 0;
 	scratchpad[i++] = 0xFF; // bcdDevice
 	scratchpad[i++] = 0xFF;
-	scratchpad[i++] = (uint8_t)(USB_PRODUCT_ID >> 0); // idProduct
-	scratchpad[i++] = (uint8_t)(USB_PRODUCT_ID >> 8);
-	scratchpad[i++] = (uint8_t)(USB_VENDOR_ID >> 0); // idVendor
-	scratchpad[i++] = (uint8_t)(USB_VENDOR_ID >> 8);
+	scratchpad[i++] = (uint8_t)(0); // idProduct
+	scratchpad[i++] = (uint8_t)(0);
+	scratchpad[i++] = (uint8_t)(0); // idVendor
+	scratchpad[i++] = (uint8_t)(0);
 	scratchpad[i++] = 0x1A; // bcdDFU
 	scratchpad[i++] = 0x01;
 	scratchpad[i++] = 'U'; // ucDfuSignature
@@ -560,5 +731,125 @@ int main(int argc, char *argv[])
 
 	fclose(dfufp);
 
-	return 0;
+    dfufp = (FILE *)NULL;
+    filesize = fsize(argv[2]); 
+    if (filesize <= 0)
+    {
+		printf("ERROR: file <%s> is errored or has size of zero, can't continue\n", argv[2]);
+		return -1;
+	}
+	dfufp = fopen(argv[2], "rb");
+	if (!dfufp)
+	{
+		printf("ERROR: unable to open file <%s> for reading\n", argv[2]);
+		return -1;
+	}
+
+    filebuf = (uint8_t *)NULL;
+    filebuf = (uint8_t *)malloc(filesize);
+    if ((i = fread(filebuf, 1, filesize, dfufp)) != filesize)
+    {
+		printf("ERROR: read only %d, unable to read full file <%s>\n", i, argv[2]);
+		return -1;
+	}
+    fclose(dfufp);
+    dfufp = (FILE *)NULL;
+
+    crc32_clean = crc32_calc(0xFFFFFFFF, filebuf, filesize-16);
+   
+    cp = strrchr(argv[2],'.');
+    if (cp == (char *)NULL)
+    {
+        fname = (uint8_t *)malloc(strlen(argv[2]));
+        if (fname == (uint8_t *)NULL)
+        {
+    		printf("ERROR: unable to allocate memory #1 fname\n");
+            return -1;
+        }
+        fext = (uint8_t *)malloc(3);
+        if (fext == (uint8_t *)NULL)
+        {
+    		printf("ERROR: unable to allocate memory #2 fext\n");
+            return -1;
+        }
+        strcpy(fname, argv[2]);
+        strcpy(fext, "dfu");
+    }
+    else
+    {
+        lenlen = cp - argv[2];
+        if (lenlen < 0) {
+            printf("ERROR: cp is before argv[2], pointer error\n");
+            return -1;
+        }
+        fname = (uint8_t *)malloc(lenlen);
+        if (fname == (uint8_t *)NULL)
+        {
+    		printf("ERROR: unable to allocate memory #3 fname %ld\n", cp-argv[2]);
+            return -1;
+        }
+        strncpy(fname, argv[2], cp - argv[2]);
+        fext = (uint8_t *)malloc(strlen(cp+1));
+        if (fext == (uint8_t *)NULL)
+        {
+    		printf("ERROR: unable to allocate memory #4 fext\n");
+            return -1;
+        }
+        strcpy(fext, cp+1);
+    }
+    fullname = (uint8_t *)malloc(strlen(fname)+10+1+strlen(fext));
+    if (fullname == (uint8_t *)NULL)
+    {
+		printf("ERROR: unable to allocate memory #5 fullname\n");
+        return -1;
+    }
+
+    while ((current_vidpid=removeFromListHead(&head)) != (vidpid_t *)NULL)
+    {
+        crc32 = crc32_clean;
+        i = filesize - 16;
+
+	    filebuf[i++] = 0xFF; // bcdDevice
+	    filebuf[i++] = 0xFF;
+	    filebuf[i++] = (uint8_t)(current_vidpid->pid>>0); // idProduct
+	    filebuf[i++] = (uint8_t)(current_vidpid->pid>>8);
+	    filebuf[i++] = (uint8_t)(current_vidpid->vid>>0); // idVendor
+	    filebuf[i++] = (uint8_t)(current_vidpid->vid>>8);
+    	filebuf[i++] = 0x1A; // bcdDFU
+	    filebuf[i++] = 0x01;
+    	filebuf[i++] = 'U'; // ucDfuSignature
+	    filebuf[i++] = 'F';
+	    filebuf[i++] = 'D';
+	    filebuf[i++] = 16; // bLength
+
+	/* the CRC-32 has now been calculated over the entire file, save for the CRC field itself */
+    	crc32 = crc32_calc(crc32, &filebuf[filesize-16], 12);
+
+	    filebuf[i++] = (uint8_t)(crc32 >> 0);
+	    filebuf[i++] = (uint8_t)(crc32 >> 8);
+	    filebuf[i++] = (uint8_t)(crc32 >> 16);
+	    filebuf[i++] = (uint8_t)(crc32 >> 24);
+        sprintf(fullname, "%s_%04x_%04x.%s", fname, 
+                (unsigned int)current_vidpid->vid, 
+                (unsigned int)current_vidpid->pid, 
+                fext);
+        free(current_vidpid);
+        current_vidpid = (vidpid_t *)NULL;
+	    dfufp = fopen(fullname, "wb");
+     	if (!dfufp)
+	    {
+		    printf("ERROR: unable to open file <%s> for writing\n", fullname);
+		    return -1;
+	    }
+        bwritten = fwrite(filebuf, 1, filesize, dfufp);
+        if (bwritten != filesize)
+        {
+		    printf("ERROR: unable to write all data to file <%s>\n", fullname);
+		    return -1;
+        }
+        fclose(dfufp);
+    }
+    remove(argv[2]);
+
+    return 0;
 }
