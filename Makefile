@@ -1,3 +1,5 @@
+CFLAGS += -D_FILE_OFFSET_BITS=64
+
 ifeq ($(OS),Windows_NT)
 	EXE_SUFFIX = .exe
 endif
