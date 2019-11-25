@@ -782,13 +782,14 @@ int main(int argc, char *argv[])
             printf("ERROR: cp is before argv[2], pointer error\n");
             return -1;
         }
-        fname = (uint8_t *)malloc(lenlen);
+        fname = (uint8_t *)malloc(lenlen+1);
         if (fname == (uint8_t *)NULL)
         {
     		printf("ERROR: unable to allocate memory #3 fname %ld\n", cp-argv[2]);
             return -1;
         }
         strncpy(fname, argv[2], cp - argv[2]);
+        fname[cp-argv[2]] = '\0';
         fext = (uint8_t *)malloc(strlen(cp+1));
         if (fext == (uint8_t *)NULL)
         {
