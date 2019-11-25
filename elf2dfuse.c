@@ -760,7 +760,7 @@ int main(int argc, char *argv[])
     cp = strrchr(argv[2],'.');
     if (cp == (char *)NULL)
     {
-        fname = (uint8_t *)malloc(strlen(argv[2]));
+        fname = (uint8_t *)malloc(strlen(argv[2])+1);
         if (fname == (uint8_t *)NULL)
         {
     		printf("ERROR: unable to allocate memory #1 fname\n");
