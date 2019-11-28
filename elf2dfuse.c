@@ -414,12 +414,15 @@ FILE *vidpidfp = (FILE *)NULL; /* file containing a list of vid:pid pairs for */
 
 void closeOpenFiles()
 {
-    if (vidpidfp != (FILE *)NULL)
+    if (vidpidfp != ((FILE *)NULL)) {
         fclose(vidpidfp);
-	if (elffp != (FILE *)NULL)
+    }
+	if (elffp != ((FILE *)NULL)) {
         fclose(elffp);
-	if (dfufp != (FILE *)NULL)
+    }
+	if (dfufp != ((FILE *)NULL)) {
         fclose(elffp);
+    }
 }
 
 Elf32_Phdr *ph = (Elf32_Phdr *)NULL;
@@ -456,7 +459,30 @@ void freeAllAllocatedMemory()
     if (filebuf != (uint8_t *)NULL)
     {
         free(filebuf);
-        filebuf = (uint8_t *)NULL;
+            if (vidpidfp != ((FILE *)NULL)) {
+        fclose(vidpidfp);
+    }
+	if (elffp != ((FILE *)NULL)) {
+        fclose(elffp);
+    }
+	if (dfufp != ((FILE *)NULL)) {
+        fclose(elffp);
+    }
+}
+
+Elf32_Phdr *ph = (Elf32_Phdr *)NULL;
+vidpid_t *head = (vidpid_t *)NULL;
+struct memory_blob *blob = (struct memory_blob *)NULL;
+struct memory_blob *pm_list = (struct memory_blob *)NULL;
+struct memory_blob *seek = (struct memory_blob *)NULL;
+uint8_t *filebuf = (uint8_t *)NULL;
+uint8_t *fname = (uint8_t *)NULL;
+uint8_t *fext = (uint8_t *)NULL;
+uint8_t *fullname = (uint8_t *)NULL;
+
+void freeAllAllocatedMemory()
+{
+filebuf = (uint8_t *)NULL;
     }
     if (fname != (uint8_t *)NULL)
     {
@@ -528,6 +554,7 @@ int main(int argc, char *argv[])
         return -1;
     }
     fclose(vidpidfp);
+    vidpidfp = (FILE *)NULL;
 
 	/*
 	read (and check) ELF header
@@ -578,6 +605,7 @@ int main(int argc, char *argv[])
 
 	/* we've read everything we need from the ELF file, so we can close the file */
 	fclose(elffp);
+    elffp = (FILE *)NULL;
 
 	/*
 	count the number of non-contiguous memory "image_elements" as well as tabulate the total file size
@@ -730,8 +758,8 @@ int main(int argc, char *argv[])
 	fwrite(scratchpad, i, 1, dfufp);
 
 	fclose(dfufp);
-
     dfufp = (FILE *)NULL;
+
     filesize = fsize(argv[2]); 
     if (filesize <= 0)
     {
@@ -772,8 +800,8 @@ int main(int argc, char *argv[])
     		printf("ERROR: unable to allocate memory #2 fext\n");
             return -1;
         }
-        strcpy(fname, argv[2]);
-        strcpy(fext, "dfu");
+        strcpy((char *)fname, argv[2]);
+        strcpy((char *)fext, "dfu");
     }
     else
     {
@@ -788,7 +816,7 @@ int main(int argc, char *argv[])
     		printf("ERROR: unable to allocate memory #3 fname %ld\n", cp-argv[2]);
             return -1;
         }
-        strncpy(fname, argv[2], cp - argv[2]);
+        strncpy((char *)fname, argv[2], cp - argv[2]);
         fname[cp-argv[2]] = '\0';
         fext = (uint8_t *)malloc(strlen(cp+1));
         if (fext == (uint8_t *)NULL)
@@ -796,9 +824,9 @@ int main(int argc, char *argv[])
     		printf("ERROR: unable to allocate memory #4 fext\n");
             return -1;
         }
-        strcpy(fext, cp+1);
+        strcpy((char *)fext, cp+1);
     }
-    fullname = (uint8_t *)malloc(strlen(fname)+10+1+strlen(fext));
+    fullname = (uint8_t *)malloc(strlen((char *)fname)+10+1+strlen((char *)fext));
     if (fullname == (uint8_t *)NULL)
     {
 		printf("ERROR: unable to allocate memory #5 fullname\n");
@@ -830,13 +858,13 @@ int main(int argc, char *argv[])
 	    filebuf[i++] = (uint8_t)(crc32 >> 8);
 	    filebuf[i++] = (uint8_t)(crc32 >> 16);
 	    filebuf[i++] = (uint8_t)(crc32 >> 24);
-        sprintf(fullname, "%s_%04x_%04x.%s", fname, 
+        sprintf((char *)fullname, "%s_%04x_%04x.%s", (char *)fname, 
                 (unsigned int)current_vidpid->vid, 
                 (unsigned int)current_vidpid->pid, 
-                fext);
+                (char *)fext);
         free(current_vidpid);
         current_vidpid = (vidpid_t *)NULL;
-	    dfufp = fopen(fullname, "wb");
+	    dfufp = fopen((char *)fullname, "wb");
      	if (!dfufp)
 	    {
 		    printf("ERROR: unable to open file <%s> for writing\n", fullname);
@@ -849,6 +877,7 @@ int main(int argc, char *argv[])
 		    return -1;
         }
         fclose(dfufp);
+        dfufp = (FILE *)NULL;
     }
     remove(argv[2]);
 
